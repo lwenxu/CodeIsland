@@ -24,10 +24,21 @@ final class QoderCNSupportTests: XCTestCase {
     func testInternationalBinaryStillResolves() {
         for path in [
             "/Users/me/.qoder/bin/qodercli/qodercli",
+            "/Users/me/.qoder/bin/qodercli/qodercli-1.1.26",
             "/opt/homebrew/lib/node_modules/@qoder-ai/qodercli/bin/cli.js",
         ] {
             XCTAssertTrue(CLIProcessResolver.sourceMatchesExecutablePath(path, source: "qoder-cli"))
         }
+    }
+
+    func testVersionedInternationalBinaryPromotesQoderToQoderCLI() {
+        XCTAssertEqual(
+            CLIProcessResolver.cliVariantOverride(
+                declaredSource: "qoder",
+                ancestry: [(123, "/Users/me/.qoder/bin/qodercli/qodercli-1.1.26")]
+            ),
+            "qoder-cli"
+        )
     }
 
     func testUnrelatedBinariesAreNotClaimed() {

@@ -159,11 +159,15 @@ class HookServer {
         pinnedAutoApproveTools ?? SettingsManager.shared.autoApproveTools
     }
 
-    /// Whether this event's agent is on the user's always-proceed list (#283).
+    /// Whether this event's agent is on the user's permanent or temporary
+    /// always-proceed list (#283).
     /// Matched on both the raw `_source` and its normalized form so "agy",
     /// "google-antigravity" and "antigravity-cli" all resolve to one entry.
     static func isAutoApprovedSource(_ event: HookEvent) -> Bool {
-        isAutoApprovedSource(event, approved: SettingsManager.shared.autoApproveSources)
+        let approved = SettingsManager.shared.autoApproveSources.union(
+            SettingsManager.shared.activeTemporaryAutoApproveSources()
+        )
+        return isAutoApprovedSource(event, approved: approved)
     }
 
     nonisolated static func isAutoApprovedSource(
@@ -682,8 +686,12 @@ class HookServer {
             }
 
         case .event:
+            let shouldAutoContinue = appState.shouldAutoContinueQoderFailure(event)
             appState.handleEvent(event)
-            sendResponse(connection: connection, data: Data("{}".utf8))
+            sendResponse(
+                connection: connection,
+                data: QoderAutoContinueProtocol.responseData(requested: shouldAutoContinue)
+            )
         }
     }
 

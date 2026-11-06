@@ -36,6 +36,46 @@ final class ConfigInstallerTests: XCTestCase {
         XCTAssertFalse(permission.2)
     }
 
+    func testQoderStopFailureHookRewakesTheSameSession() throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let configPath = tempDir.appendingPathComponent("settings.json").path
+        let cli = CLIConfig(
+            name: "Qoder IDE",
+            source: "qoder",
+            configPath: configPath,
+            configKey: "hooks",
+            format: .claude,
+            events: [("StopFailure", 30, false)]
+        )
+
+        XCTAssertTrue(ConfigInstaller.installExternalHooks(cli: cli, fm: fm))
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: configPath))
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let hooks = try XCTUnwrap(root["hooks"] as? [String: Any])
+        let entries = try XCTUnwrap(hooks["StopFailure"] as? [[String: Any]])
+        let hookList = try XCTUnwrap(entries.first?["hooks"] as? [[String: Any]])
+        let hook = try XCTUnwrap(hookList.first)
+        XCTAssertEqual(hook["asyncRewake"] as? Bool, true)
+        XCTAssertNotNil(hook["rewakeMessage"] as? String)
+        XCTAssertNotNil(hook["rewakeSummary"] as? String)
+        XCTAssertTrue(try XCTUnwrap(hook["command"] as? String).contains("--source qoder"))
+    }
+
+    func testOnlyQoderIDERegistersStopFailure() throws {
+        let qoder = try XCTUnwrap(ConfigInstaller.allCLIs.first { $0.source == "qoder" })
+        let qoderCN = try XCTUnwrap(ConfigInstaller.allCLIs.first { $0.source == "qoder-cn" })
+        let qoderWork = try XCTUnwrap(ConfigInstaller.allCLIs.first { $0.source == "qoderwork" })
+
+        XCTAssertTrue(qoder.events.contains { $0.0 == "StopFailure" })
+        XCTAssertFalse(qoderCN.events.contains { $0.0 == "StopFailure" })
+        XCTAssertFalse(qoderWork.events.contains { $0.0 == "StopFailure" })
+    }
+
     func testRemoveManagedHookEntriesAlsoPrunesLegacyVibeIslandHooks() throws {
         let hooks: [String: Any] = [
             "SessionEnd": [

@@ -130,14 +130,14 @@ enum SessionDiscovery {
         }
     }
 
-    static func findDiscoveredSessions() -> [DiscoveredSession] {
+    static func findDiscoveredSessions(excludingCodexDesktopSessionIds: Set<String> = []) -> [DiscoveredSession] {
         let candidatePids = ProcessTable.allProcessIds()
         var discovered: [DiscoveredSession] = []
         if ConfigInstaller.isEnabled(source: "claude") {
             discovered.append(contentsOf: ClaudeDiscovery.findActiveClaudeSessions(candidatePids: candidatePids))
         }
         if ConfigInstaller.isEnabled(source: "codex") {
-            discovered.append(contentsOf: CodexDiscovery.findActiveCodexSessions(candidatePids: candidatePids))
+            discovered.append(contentsOf: CodexDiscovery.findActiveCodexSessions(candidatePids: candidatePids, excludingDesktopSessionIds: excludingCodexDesktopSessionIds))
         }
         if ConfigInstaller.isEnabled(source: "gemini") {
             discovered.append(contentsOf: GeminiDiscovery.findActiveGeminiSessions(candidatePids: candidatePids))

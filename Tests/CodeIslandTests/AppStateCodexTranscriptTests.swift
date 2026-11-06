@@ -230,6 +230,13 @@ final class AppStateCodexTranscriptTests: XCTestCase {
         XCTAssertEqual(records.map(\.sessionId), ["new-thread"])
         XCTAssertEqual(records.first?.status, .processing)
         XCTAssertEqual(records.first?.cwd, "/new/repo")
+
+        XCTAssertTrue(AppState.recentCodexDesktopThreadRecords(
+            statePath: statePath,
+            now: now,
+            excludingSessionIds: ["new-thread"],
+            fileManager: fm
+        ).isEmpty)
     }
 
     func testCodexDesktopStateScanTreatsMissingAndIncompatibleDatabasesAsEmpty() throws {
@@ -564,6 +571,20 @@ final class AppStateCodexTranscriptTests: XCTestCase {
         XCTAssertEqual(discovered.first?.providerSessionId, rawSessionId)
         XCTAssertEqual(discovered.first?.termBundleId, AppState.codexAppBundleId)
         XCTAssertEqual(discovered.first?.cwd, "/fallback/repo")
+
+        XCTAssertTrue(AppState.discoverCodexSessions(
+            processes: [CodexProcessDiscoveryCandidate(
+                pid: 123,
+                cwd: "/",
+                startTime: now.addingTimeInterval(-60),
+                isDesktop: true
+            )],
+            sessionsBase: sessionsBase.path,
+            statePath: tempDir.appendingPathComponent("missing.sqlite").path,
+            now: now,
+            excludingDesktopSessionIds: [rawSessionId],
+            fileManager: fm
+        ).isEmpty)
     }
 
     func testSameRawThreadOpenInDesktopAndCLIRemainsTwoDiscoveries() throws {

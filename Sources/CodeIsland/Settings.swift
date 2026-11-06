@@ -37,6 +37,7 @@ enum SettingsKey {
     static let autoCollapseAfterSessionJump = "autoCollapseAfterSessionJump"
     static let autoExpandOnPermission = "autoExpandOnPermission"
     static let autoExpandOnCompletion = "autoExpandOnCompletion"
+    static let qoderAutoContinueOnFailure = "qoderAutoContinueOnFailure"
     static let pluginSessionMode = "pluginSessionMode"  // "separate" | "merge" | "hide"
     // Read-only watch of Claude Desktop's Cowork / local Chat session store
     static let trackClaudeDesktopCowork = "trackClaudeDesktopCowork"
@@ -144,6 +145,9 @@ enum SettingsKey {
     // Turbo/YOLO/always-proceed mode (#283)
     static let autoApproveSources = "autoApproveSources"
 
+    // Temporary source auto-approval windows (JSON: source id -> expiry epoch).
+    static let temporaryAutoApproveSources = "temporaryAutoApproveSources"
+
     // Hook cwd exclusion (comma-separated substrings; cwd containing any drops the event)
     static let excludedHookCwdSubstrings = "excludedHookCwdSubstrings"
 
@@ -179,6 +183,7 @@ struct SettingsDefaults {
     static let autoCollapseAfterSessionJump = false
     static let autoExpandOnPermission = true
     static let autoExpandOnCompletion = true
+    static let qoderAutoContinueOnFailure = true
     static let pluginSessionMode = "separate"
     static let trackClaudeDesktopCowork = true
     static let hapticOnHover = false
@@ -250,6 +255,8 @@ struct SettingsDefaults {
 
     static let autoApproveSources = ""
 
+    static let temporaryAutoApproveSources = "{}"
+
     static let excludedHookCwdSubstrings = ""
 
     static let claudeConfigDir = ""
@@ -285,6 +292,7 @@ class SettingsManager {
             SettingsKey.autoCollapseAfterSessionJump: SettingsDefaults.autoCollapseAfterSessionJump,
             SettingsKey.autoExpandOnPermission: SettingsDefaults.autoExpandOnPermission,
             SettingsKey.autoExpandOnCompletion: SettingsDefaults.autoExpandOnCompletion,
+            SettingsKey.qoderAutoContinueOnFailure: SettingsDefaults.qoderAutoContinueOnFailure,
             SettingsKey.pluginSessionMode: SettingsDefaults.pluginSessionMode,
             SettingsKey.trackClaudeDesktopCowork: SettingsDefaults.trackClaudeDesktopCowork,
             SettingsKey.hapticOnHover: SettingsDefaults.hapticOnHover,
@@ -338,6 +346,7 @@ class SettingsManager {
             SettingsKey.defaultSource: SettingsDefaults.defaultSource,
             SettingsKey.autoApproveTools: SettingsDefaults.autoApproveTools,
             SettingsKey.autoApproveSources: SettingsDefaults.autoApproveSources,
+            SettingsKey.temporaryAutoApproveSources: SettingsDefaults.temporaryAutoApproveSources,
             SettingsKey.excludedHookCwdSubstrings: SettingsDefaults.excludedHookCwdSubstrings,
             SettingsKey.claudeConfigDir: SettingsDefaults.claudeConfigDir,
             SettingsKey.extraConfigDirs: SettingsDefaults.extraConfigDirs,
@@ -407,6 +416,11 @@ class SettingsManager {
     var notchAnimationSpeed: Double {
         get { NotchAnimationSpeed.clamped(defaults.double(forKey: SettingsKey.notchAnimationSpeed)) }
         set { defaults.set(NotchAnimationSpeed.clamped(newValue), forKey: SettingsKey.notchAnimationSpeed) }
+    }
+
+    var qoderAutoContinueOnFailure: Bool {
+        get { defaults.bool(forKey: SettingsKey.qoderAutoContinueOnFailure) }
+        set { defaults.set(newValue, forKey: SettingsKey.qoderAutoContinueOnFailure) }
     }
 
     var hapticOnHover: Bool {
@@ -522,6 +536,61 @@ class SettingsManager {
         set {
             defaults.set(newValue.sorted().joined(separator: ","), forKey: SettingsKey.autoApproveSources)
         }
+    }
+
+    nonisolated static func temporaryAutoApproveExpirations(from raw: String) -> [String: TimeInterval] {
+        guard let data = raw.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String: TimeInterval].self, from: data) else {
+            return [:]
+        }
+        return decoded.reduce(into: [:]) { result, entry in
+            let source = entry.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !source.isEmpty else { return }
+            result[source] = entry.value
+        }
+    }
+
+    var temporaryAutoApproveExpirations: [String: TimeInterval] {
+        get {
+            let raw = defaults.string(forKey: SettingsKey.temporaryAutoApproveSources)
+                ?? SettingsDefaults.temporaryAutoApproveSources
+            return Self.temporaryAutoApproveExpirations(from: raw)
+        }
+        set {
+            let data = try? JSONEncoder().encode(newValue)
+            defaults.set(data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}",
+                         forKey: SettingsKey.temporaryAutoApproveSources)
+        }
+    }
+
+    func activeTemporaryAutoApproveSources(at date: Date = Date()) -> Set<String> {
+        let now = date.timeIntervalSince1970
+        return Set(temporaryAutoApproveExpirations.compactMap { source, expiry in
+            expiry > now ? source : nil
+        })
+    }
+
+    func enableTemporaryAutoApprove(source: String, until expiry: Date) {
+        let source = source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !source.isEmpty else { return }
+        var expirations = temporaryAutoApproveExpirations
+        expirations[source] = expiry.timeIntervalSince1970
+        temporaryAutoApproveExpirations = expirations
+    }
+
+    func enablePermanentAutoApprove(source: String) {
+        let source = source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !source.isEmpty else { return }
+        var sources = autoApproveSources
+        sources.insert(source)
+        autoApproveSources = sources
+        disableTemporaryAutoApprove(source: source)
+    }
+
+    func disableTemporaryAutoApprove(source: String) {
+        var expirations = temporaryAutoApproveExpirations
+        expirations.removeValue(forKey: source.lowercased())
+        temporaryAutoApproveExpirations = expirations
     }
 
     /// Comma-separated list of substrings; any hook event whose `cwd` contains

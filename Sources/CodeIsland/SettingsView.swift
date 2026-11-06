@@ -430,7 +430,14 @@ private struct GeneralPage: View {
 
 // MARK: - Behavior Page
 
+private struct AutoApproveSourceOption: Identifiable {
+    let id: String
+    let name: String
+}
+
 private struct BehaviorPage: View {
+    private static let permanentAutoApproveDuration: TimeInterval = -1
+
     @ObservedObject private var l10n = L10n.shared
     var appState: AppState?
 
@@ -441,6 +448,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
     @AppStorage(SettingsKey.autoExpandOnPermission) private var autoExpandOnPermission = SettingsDefaults.autoExpandOnPermission
     @AppStorage(SettingsKey.followUpReminderMinutes) private var followUpReminderMinutes = SettingsDefaults.followUpReminderMinutes
+    @AppStorage(SettingsKey.qoderAutoContinueOnFailure) private var qoderAutoContinueOnFailure = SettingsDefaults.qoderAutoContinueOnFailure
     // Seeded through the migration shim so a legacy autoExpandOnCompletion=false
     // shows up as "off" here; writes go to the new key via onChange.
     @State private var completionStyle: String = AppState.completionStyle().rawValue
@@ -454,6 +462,9 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.maxToolHistory) private var maxToolHistory = SettingsDefaults.maxToolHistory
     @AppStorage(SettingsKey.autoApproveTools) private var autoApproveRaw: String = SettingsDefaults.autoApproveTools
     @AppStorage(SettingsKey.autoApproveSources) private var autoApproveSources: String = SettingsDefaults.autoApproveSources
+    @AppStorage(SettingsKey.temporaryAutoApproveSources) private var temporaryAutoApproveSources: String = SettingsDefaults.temporaryAutoApproveSources
+    @State private var selectedTemporaryAutoApproveSource = "qoderwork"
+    @State private var temporaryAutoApproveDuration: TimeInterval = 3600
     @AppStorage(SettingsKey.excludedHookCwdSubstrings) private var excludedHookCwdSubstrings: String = SettingsDefaults.excludedHookCwdSubstrings
     @AppStorage(SettingsKey.claudeConfigDir) private var claudeConfigDir: String = SettingsDefaults.claudeConfigDir
     @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled: Bool = SettingsDefaults.webhookEnabled
@@ -480,6 +491,29 @@ private struct BehaviorPage: View {
                 autoApproveRaw = set.sorted().joined(separator: ",")
             }
         )
+    }
+
+    private var temporaryAutoApproveSourceOptions: [AutoApproveSourceOption] {
+        var seen = Set<String>()
+        return ConfigInstaller.allCLIs.compactMap { cli in
+            let source = (cli.bridgeSourceOverride ?? cli.source).lowercased()
+            guard seen.insert(source).inserted else { return nil }
+            return AutoApproveSourceOption(id: source, name: cli.name)
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func activeTemporaryApprovals(at date: Date) -> [(source: String, expiry: Date)] {
+        let now = date.timeIntervalSince1970
+        return SettingsManager.temporaryAutoApproveExpirations(from: temporaryAutoApproveSources)
+            .compactMap { source, expiry in
+                expiry > now ? (source, Date(timeIntervalSince1970: expiry)) : nil
+            }
+            .sorted { $0.expiry < $1.expiry }
+    }
+
+    private func sourceName(for source: String) -> String {
+        temporaryAutoApproveSourceOptions.first(where: { $0.id == source })?.name ?? source
     }
 
     var body: some View {
@@ -513,6 +547,12 @@ private struct BehaviorPage: View {
                     title: l10n["auto_expand_on_question"],
                     desc: l10n["auto_expand_on_question_desc"],
                     isOn: $autoExpandOnQuestion,
+                    animation: .smartSuppress
+                )
+                BehaviorToggleRow(
+                    title: l10n["qoder_auto_continue_on_failure"],
+                    desc: l10n["qoder_auto_continue_on_failure_desc"],
+                    isOn: $qoderAutoContinueOnFailure,
                     animation: .smartSuppress
                 )
                 BehaviorToggleRow(
@@ -626,6 +666,66 @@ private struct BehaviorPage: View {
                     )
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
+                }
+            }
+            Section(l10n["temporary_auto_approve"]) {
+                Text(l10n["temporary_auto_approve_desc"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker(l10n["temporary_auto_approve_app"], selection: $selectedTemporaryAutoApproveSource) {
+                    ForEach(temporaryAutoApproveSourceOptions) { option in
+                        Text(option.name).tag(option.id)
+                    }
+                }
+
+                Picker(l10n["temporary_auto_approve_duration"], selection: $temporaryAutoApproveDuration) {
+                    Text(l10n["duration_15_minutes"]).tag(TimeInterval(15 * 60))
+                    Text(l10n["duration_30_minutes"]).tag(TimeInterval(30 * 60))
+                    Text(l10n["duration_1_hour"]).tag(TimeInterval(60 * 60))
+                    Text(l10n["duration_2_hours"]).tag(TimeInterval(2 * 60 * 60))
+                    Text(l10n["duration_4_hours"]).tag(TimeInterval(4 * 60 * 60))
+                    Text(l10n["duration_8_hours"]).tag(TimeInterval(8 * 60 * 60))
+                    Text(l10n["duration_permanent"]).tag(Self.permanentAutoApproveDuration)
+                }
+
+                Button(l10n["temporary_auto_approve_start"]) {
+                    if temporaryAutoApproveDuration == Self.permanentAutoApproveDuration {
+                        SettingsManager.shared.enablePermanentAutoApprove(
+                            source: selectedTemporaryAutoApproveSource
+                        )
+                    } else {
+                        SettingsManager.shared.enableTemporaryAutoApprove(
+                            source: selectedTemporaryAutoApproveSource,
+                            until: Date().addingTimeInterval(temporaryAutoApproveDuration)
+                        )
+                    }
+                }
+                .disabled(selectedTemporaryAutoApproveSource.isEmpty)
+
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let approvals = activeTemporaryApprovals(at: context.date)
+                    if approvals.isEmpty {
+                        Text(l10n["temporary_auto_approve_empty"])
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        ForEach(approvals, id: \.source) { approval in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(sourceName(for: approval.source))
+                                    Text(approval.expiry, style: .timer)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(l10n["temporary_auto_approve_stop"]) {
+                                    SettingsManager.shared.disableTemporaryAutoApprove(source: approval.source)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2722,20 +2822,43 @@ private struct BehaviorToggleRow: View {
 private struct NotchMiniAnim: View {
     let animation: BehaviorAnim
     private let orange = Color(red: 0.96, green: 0.65, blue: 0.14)
+    @State private var frameTime: Double = 0
+    @State private var animationTask: Task<Void, Never>?
 
     var body: some View {
-        // FrameClock, not TimelineView: one this fast updates on every
-        // display frame and lays the whole Settings page out each time (#381).
-        FrameClock(interval: FrameTicker.step) { now in
-            Canvas { c, sz in
-                draw(c, sz: sz, t: now)
-            }
+        Canvas { c, sz in
+            draw(c, sz: sz, t: frameTime)
         }
         .frame(width: 72, height: 48)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
             .stroke(Color.secondary.opacity(0.15), lineWidth: 0.5))
+        .onHover { hovering in
+            setAnimating(hovering)
+        }
+        .onDisappear {
+            animationTask?.cancel()
+            animationTask = nil
+        }
+    }
+
+    private func setAnimating(_ active: Bool) {
+        animationTask?.cancel()
+        animationTask = nil
+        guard active else {
+            frameTime = 0
+            return
+        }
+
+        frameTime = Date().timeIntervalSinceReferenceDate
+        animationTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled else { return }
+                frameTime = Date().timeIntervalSinceReferenceDate
+            }
+        }
     }
 
     private func lerp(_ a: CGFloat, _ b: CGFloat, _ t: Double) -> CGFloat {

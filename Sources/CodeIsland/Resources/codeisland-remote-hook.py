@@ -15,7 +15,7 @@ import struct
 import subprocess
 import sys
 
-VERSION = "0.4.4"
+VERSION = "0.4.4-lwen.1"
 # The `_edge` facts version (HookEdgeFacts.version on the island).
 EDGE_FACTS_VERSION = 1
 # Per-user socket path (#193): CodeIsland injects CODEISLAND_SOCKET_PATH via the hook
@@ -610,6 +610,31 @@ def _get_tty():
     return None
 
 
+def _is_qoder_cli_ancestor():
+    pid = os.getppid()
+    for _ in range(20):
+        if pid <= 1:
+            break
+        try:
+            result = subprocess.run(
+                ["ps", "-ww", "-p", str(pid), "-o", "ppid=", "-o", "comm="],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            parts = result.stdout.strip().split(maxsplit=1)
+            if len(parts) != 2:
+                break
+            parent_pid = int(parts[0])
+            executable = os.path.basename(parts[1]).lower()
+            if executable == "qodercli" or executable.startswith("qodercli-"):
+                return True
+            pid = parent_pid
+        except Exception:
+            break
+    return False
+
+
 def _getcwd():
     try:
         return os.getcwd()
@@ -680,6 +705,8 @@ def main():
     session_id = data.get("session_id")
     cwd = data.get("cwd") or _getcwd()
     payload = dict(data)
+    if SOURCE == "qoder" and _is_qoder_cli_ancestor():
+        payload["_source"] = "qoder-cli"
 
     # What only this host can read: the agent's transcript, Hermes's store.
     if SOURCE == "claude":

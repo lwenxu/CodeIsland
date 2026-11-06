@@ -73,6 +73,82 @@ final class AutoApproveSourceTests: XCTestCase {
         XCTAssertTrue(parsed.contains("cursor"))
     }
 
+    func testTemporarySettingParsesNormalizedSourceAndFiltersExpiredRules() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let raw = #"{" QoderWork ":3000,"claude":1000}"#
+        let parsed = SettingsManager.temporaryAutoApproveExpirations(from: raw)
+
+        XCTAssertEqual(parsed["qoderwork"], 3_000)
+        XCTAssertEqual(parsed["claude"], 1_000)
+
+        let active = Set(parsed.compactMap { source, expiry in
+            expiry > now.timeIntervalSince1970 ? source : nil
+        })
+        XCTAssertEqual(active, ["qoderwork"])
+    }
+
+    @MainActor
+    func testTemporarySourceIsAutoApprovedOnlyBeforeExpiry() throws {
+        let defaults = UserDefaults.standard
+        let savedPermanent = defaults.object(forKey: SettingsKey.autoApproveSources)
+        let savedTemporary = defaults.object(forKey: SettingsKey.temporaryAutoApproveSources)
+        defer {
+            if let savedPermanent {
+                defaults.set(savedPermanent, forKey: SettingsKey.autoApproveSources)
+            } else {
+                defaults.removeObject(forKey: SettingsKey.autoApproveSources)
+            }
+            if let savedTemporary {
+                defaults.set(savedTemporary, forKey: SettingsKey.temporaryAutoApproveSources)
+            } else {
+                defaults.removeObject(forKey: SettingsKey.temporaryAutoApproveSources)
+            }
+        }
+
+        defaults.set("", forKey: SettingsKey.autoApproveSources)
+        SettingsManager.shared.enableTemporaryAutoApprove(
+            source: "QoderWork",
+            until: Date().addingTimeInterval(60)
+        )
+        XCTAssertTrue(HookServer.isAutoApprovedSource(try makeEvent(source: "qoderwork")))
+
+        SettingsManager.shared.enableTemporaryAutoApprove(
+            source: "qoderwork",
+            until: Date().addingTimeInterval(-1)
+        )
+        XCTAssertFalse(HookServer.isAutoApprovedSource(try makeEvent(source: "qoderwork")))
+    }
+
+    @MainActor
+    func testPermanentSourceIsPersistedAndClearsTemporaryExpiry() throws {
+        let defaults = UserDefaults.standard
+        let savedPermanent = defaults.object(forKey: SettingsKey.autoApproveSources)
+        let savedTemporary = defaults.object(forKey: SettingsKey.temporaryAutoApproveSources)
+        defer {
+            if let savedPermanent {
+                defaults.set(savedPermanent, forKey: SettingsKey.autoApproveSources)
+            } else {
+                defaults.removeObject(forKey: SettingsKey.autoApproveSources)
+            }
+            if let savedTemporary {
+                defaults.set(savedTemporary, forKey: SettingsKey.temporaryAutoApproveSources)
+            } else {
+                defaults.removeObject(forKey: SettingsKey.temporaryAutoApproveSources)
+            }
+        }
+
+        defaults.set("", forKey: SettingsKey.autoApproveSources)
+        SettingsManager.shared.enableTemporaryAutoApprove(
+            source: "QoderWork",
+            until: Date().addingTimeInterval(60)
+        )
+        SettingsManager.shared.enablePermanentAutoApprove(source: "QoderWork")
+
+        XCTAssertTrue(SettingsManager.shared.autoApproveSources.contains("qoderwork"))
+        XCTAssertNil(SettingsManager.shared.temporaryAutoApproveExpirations["qoderwork"])
+        XCTAssertTrue(HookServer.isAutoApprovedSource(try makeEvent(source: "qoderwork")))
+    }
+
     // MARK: - Helpers
 
     private func makeEvent(source: String) throws -> HookEvent {

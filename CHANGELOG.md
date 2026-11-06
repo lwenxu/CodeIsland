@@ -281,6 +281,60 @@
 - 文档：Buddy 的用法能找到了——开关在哪、macOS 会同时要**本地网络和蓝牙**权限以及各自负责什么，还有之前没有任何入口的硬件 Buddy 制作指南链接（#318，感谢 @nevermorewei）
 - 文档：star history 图恢复显示；GitHub 限制 stargazer API 之后它一直是一张占位图（#319，感谢 @FaintFlower）
 - Code Island Buddy（iPhone）：多会话时，缩小状态的灵动岛两边都是死的——左边的总数要等回收才减，右边是写死的「会话」二字。现在右边显示 `活跃/总数`，圆点显示整组里最需要处理的状态而不是主推会话的状态，别的会话里等待批准不再看不见。**随下一次 Buddy 的 App Store 更新发布，不在本次更新内**（#330，感谢 @caishengwei）
+## 本地定制记录（合并前保留）
+
+## [v1.0.39] - 2026-09-12
+
+### 中文
+- 远程 Qoder Hook 根据进程祖先识别 QoderCLI，避免误用 Qoder 桌面版协议。QoderCLI 原生提问仍需独立接管，暂未解决远端点击回传。
+
+## [v1.0.38] - 2026-08-21
+
+### English
+- Add a permanent duration option to per-app auto-approval. Permanent rules are persisted and remain active across app restarts until removed.
+
+### 中文
+- 按程序自动审批新增“永久”时长选项。永久规则会持久化保存，APP 重启后仍持续生效，直至手动移除。
+
+## [v1.0.37] - 2026-08-19
+
+### English
+- Recognize Qoder CLI's versioned managed executable (for example `qodercli-1.1.26`) so AskUserQuestion responses use the CLI protocol instead of falling back to Qoder's native terminal prompt.
+
+### 中文
+- 识别 Qoder CLI 的版本化托管二进制（例如 `qodercli-1.1.26`），确保 AskUserQuestion 使用 CLI 回传协议，不再回退到 Qoder 终端原生提问。
+
+## [v1.0.36] - 2026-08-19
+
+### English
+- Fix consecutive AskUserQuestion wizards reusing the previous card's SwiftUI state, which could send stale answers from an earlier qodercli question into the new request.
+
+### 中文
+- 修复连续 AskUserQuestion 复用上一张问题卡 SwiftUI 状态的问题，避免 qodercli 的新问题收到上一轮遗留答案。
+
+## [v1.0.35] - 2026-08-19
+
+### English
+- Add temporary per-app auto-approval windows. Permission requests from the selected app are approved silently until expiration, while questions continue to be shown normally.
+
+### 中文
+- 新增按程序设置的临时自动审批时段。在到期前，所选程序的审批请求会静默通过，提问仍会正常显示。
+
+## [v1.0.34] - 2026-08-19
+
+### English
+- Fix QoderWork AskUserQuestion selections failing strict schema validation by omitting the unsupported scalar `answer` field while preserving `questions` and `answers`.
+
+### 中文
+- 修复 QoderWork 的 AskUserQuestion 选择因严格 schema 校验失败的问题：保留 `questions` 和 `answers`，同时移除不支持的标量 `answer` 字段。
+
+## [v1.0.33] - 2026-08-19
+
+### English
+- Fix Qoder IDE AskUserQuestion choices appearing to do nothing. Qoder IDE uses a different PermissionRequest response contract from standalone qoder-cli; selected answers are now returned through the IDE-native decision reason so the agent receives them without opening a duplicate Qoder dialog.
+
+### 中文
+- 修复在 CodeIsland 点击 Qoder IDE 的 AskUserQuestion 选项后无效的问题。Qoder IDE 与独立 qoder-cli 使用不同的 PermissionRequest 响应协议；现在通过 IDE 原生决策原因回传选择，agent 能拿到答案，也不会再弹出重复的 Qoder 问答框。
 
 ## [v1.0.32] - 2026-08-15
 

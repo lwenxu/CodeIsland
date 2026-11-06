@@ -312,6 +312,8 @@ if intake.sessionIdIsFallback {
 
 // agy wired through Gemini-style hooks names the event on stdin, not in --event.
 writeImmediateStdout(intake.immediateStdout)
+let isQoderStopFailure = (intake.eventName == "StopFailure" || intake.eventName == "stop_failure")
+    && intake.source == "qoder"
 
 let isBlocking = intake.waitsForAnswer
 bridgeLog.note(BridgeLog.hookLine(
@@ -375,6 +377,12 @@ if isBlocking {
 // Wait for server response — critical: without this, close() races ahead
 // of NWListener's main-thread handler and the event is lost
 let response = recvAll(sock)
+
+if isQoderStopFailure, QoderAutoContinueProtocol.requestsAutoContinue(response) {
+    FileHandle.standardOutput.write(Data(QoderAutoContinueProtocol.prompt.utf8))
+    close(sock)
+    exit(2)
+}
 
 // Blocking events: forward response to stdout, in the form the agent reads
 if let stdout = intake.stdout(forAnswer: response) {

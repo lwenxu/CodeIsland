@@ -44,7 +44,7 @@ private struct RemoteCommandResult: Sendable {
 }
 
 enum RemoteInstaller {
-    private static let remoteHookVersion = "0.4.4"
+    private static let remoteHookVersion = "0.4.4-lwen.1"
     private static let remoteOpencodePluginVersion = "v9"
 
     static func installAll(host: RemoteHost, remoteSocketPath: String) async -> RemoteInstallResult {

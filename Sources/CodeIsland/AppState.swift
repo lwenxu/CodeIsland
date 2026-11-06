@@ -376,6 +376,9 @@ final class AppState {
     private(set) lazy var discovery: SessionDiscoveryCoordinator = {
         let discovery = SessionDiscoveryCoordinator()
         discovery.onDiscovered = { [weak self] in self?.integrateDiscovered($0) }
+        discovery.knownCodexDesktopSessionIds = { [weak self] in
+            self?.knownCodexDesktopProviderSessionIds() ?? []
+        }
         return discovery
     }()
     /// Cursor Agent Task transcripts on disk, for rebranding default-Claude
@@ -974,6 +977,9 @@ final class AppState {
         hostHarnessProbes.removeValue(forKey: sessionId)
         hostHarnessProbeRetryAt.removeValue(forKey: sessionId)
         claudeTerminalProbes.removeValue(forKey: sessionId)
+        qoderAutoContinuedTurns.remove(sessionId)
+        qoderAutoContinuePendingFailures.remove(sessionId)
+        completionQueue.removeAll { $0 == sessionId }
         if activeSessionId == sessionId {
             activeSessionId = mostActiveSessionId()
         }
@@ -1661,6 +1667,39 @@ final class AppState {
         providerTitleGenerations[cardId, default: 0] += 1
     }
 
+    @ObservationIgnored
+    private var qoderAutoContinuedTurns: Set<String> = []
+
+    @ObservationIgnored
+    private var qoderAutoContinuePendingFailures: Set<String> = []
+
+    nonisolated static func isQoderStopFailure(_ event: HookEvent) -> Bool {
+        (event.eventName == "StopFailure" || event.eventName == "stop_failure")
+            && SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) == "qoder"
+    }
+
+    nonisolated static func isQoderAutoContinuePrompt(_ event: HookEvent) -> Bool {
+        guard EventNormalizer.normalize(event.eventName) == "UserPromptSubmit",
+              SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) == "qoder" else {
+            return false
+        }
+        return ["prompt", "user_prompt", "message"].contains { key in
+            guard let rawValue = event.rawJSON[key] as? String else { return false }
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value == QoderAutoContinueProtocol.prompt
+                || value.contains(QoderAutoContinueProtocol.rewakeMessage)
+        }
+    }
+
+    func shouldAutoContinueQoderFailure(_ event: HookEvent) -> Bool {
+        guard Self.isQoderStopFailure(event),
+              SettingsManager.shared.qoderAutoContinueOnFailure else { return false }
+        let sessionId = event.sessionId ?? "default"
+        guard qoderAutoContinuedTurns.insert(sessionId).inserted else { return false }
+        qoderAutoContinuePendingFailures.insert(sessionId)
+        return true
+    }
+
     func handleEvent(_ event: HookEvent) {
         // Cursor ran both of CodeIsland's hooks for this step: the second copy
         // is the same prompt or finished turn, not another one to chime for.
@@ -1701,6 +1740,10 @@ final class AppState {
             sessionId,
             evidence: .forHookEvent(event, normalizedEventName: normalizedEventName)
         ) else { return }
+        if normalizedEventName == "UserPromptSubmit", !Self.isQoderAutoContinuePrompt(event) {
+            qoderAutoContinuedTurns.remove(sessionId)
+            qoderAutoContinuePendingFailures.remove(sessionId)
+        }
 
         // Account chatter, not session activity. CodeBuddy fires
         // Notification(auth_success) as the CLI boots — before SessionStart and
@@ -1764,11 +1807,24 @@ final class AppState {
         resolveOrphanPermissionsOnActivity(event)
         resolveToolUseIfCompleted(event)
 
-        let reduction = reduceHookEvent(sessions: &sessions, event: event, maxHistory: maxHistory,
+        let isAutoContinuingQoderFailure = Self.isQoderStopFailure(event)
+            && qoderAutoContinuePendingFailures.remove(sessionId) != nil
+        var reduction = reduceHookEvent(sessions: &sessions, event: event, maxHistory: maxHistory,
                                         replyCompletePlaceholder: L10n.shared["reply_complete_placeholder"])
         // Whose turn this was is read off the session as the event left it,
         // before the Cursor fold below can rebrand, fold or drop the card.
         let attentionSubject = AttentionSubject(sessions[sessionId])
+
+        if Self.isQoderStopFailure(event) {
+            sessions[sessionId]?.currentTool = nil
+            sessions[sessionId]?.toolDescription = event.rawJSON["error"] as? String
+            sessions[sessionId]?.interrupted = !isAutoContinuingQoderFailure
+            sessions[sessionId]?.status = isAutoContinuingQoderFailure ? .processing : .idle
+            if isAutoContinuingQoderFailure {
+                reduction.facts.endedTurn = false
+                reduction.facts.turnError = nil
+            }
+        }
 
         // Cursor Agent Tasks often fire Claude-format hooks without `--source`,
         // leaving ghost Claude cards. Rebrand + fold before the rest of the
@@ -2417,7 +2473,27 @@ final class AppState {
 
     nonisolated static func isQoderEvent(_ event: HookEvent) -> Bool {
         guard let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) else { return false }
-        return source == "qoder" || source == "qoder-cli"
+        return source == "qoder" || source == "qoder-cli" || source == "qoderwork"
+    }
+
+    nonisolated static func isQoderIDEEvent(_ event: HookEvent) -> Bool {
+        SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) == "qoder"
+    }
+
+    nonisolated static func qoderIDEQuestionResponse(answers: [String: String]) -> [String: Any] {
+        let renderedAnswers = answers.map { question, answer in
+            "Question \(question): Selected option(s) \(answer)"
+        }.joined(separator: "\n")
+        let reason = """
+        User questions responses:
+        \(renderedAnswers)
+        The user answered through CodeIsland. This AskUserQuestion is blocked only to prevent Qoder IDE from showing a duplicate native prompt. Treat these selections as the tool result and continue.
+        """
+        return [
+            "hookEventName": "PermissionRequest",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        ]
     }
 
     /// `expectedSessionId` is the session the remote surface was showing when
@@ -2710,15 +2786,19 @@ final class AppState {
                 answer: nil,
                 originalQuestions: originalQuestions
             )
-            let obj: [String: Any] = [
-                "hookSpecificOutput": [
+            let hookSpecificOutput: [String: Any]
+            if Self.isQoderIDEEvent(event) {
+                hookSpecificOutput = Self.qoderIDEQuestionResponse(answers: [:])
+            } else {
+                hookSpecificOutput = [
                     "hookEventName": "PermissionRequest",
                     "decision": [
                         "behavior": "allow",
-                        "updatedInput": updatedInput
-                    ] as [String: Any]
-                ] as [String: Any]
-            ]
+                        "updatedInput": updatedInput,
+                    ] as [String: Any],
+                ]
+            }
+            let obj: [String: Any] = ["hookSpecificOutput": hookSpecificOutput]
             let responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
             continuation.resume(returning: responseData)
             sessions[sessionId]?.status = .processing
@@ -2802,15 +2882,25 @@ final class AppState {
                 answer: answer,
                 originalQuestions: pending.event.toolInput?["questions"] as? [[String: Any]]
             )
-            let obj: [String: Any] = [
-                "hookSpecificOutput": [
+            let hookSpecificOutput: [String: Any]
+            if Self.isQoderIDEEvent(pending.event) {
+                // Qoder IDE parses its native permissionDecision shape, but
+                // `allow + updatedInput.answers` still opens the duplicate
+                // AskUserQuestion dialog. A deny reason is delivered to the
+                // agent as the tool result, so carry the selected answer there.
+                hookSpecificOutput = Self.qoderIDEQuestionResponse(
+                    answers: [answerKey: answer]
+                )
+            } else {
+                hookSpecificOutput = [
                     "hookEventName": "PermissionRequest",
                     "decision": [
                         "behavior": "allow",
-                        "updatedInput": updatedInput
-                    ] as [String: Any]
-                ] as [String: Any]
-            ]
+                        "updatedInput": updatedInput,
+                    ] as [String: Any],
+                ]
+            }
+            let obj: [String: Any] = ["hookSpecificOutput": hookSpecificOutput]
             responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
         } else {
             let obj: [String: Any] = [
@@ -2928,15 +3018,19 @@ final class AppState {
                 originalQuestions: pending.event.toolInput?["questions"] as? [[String: Any]],
                 answerDetails: answerDetails
             )
-            let obj: [String: Any] = [
-                "hookSpecificOutput": [
+            let hookSpecificOutput: [String: Any]
+            if Self.isQoderIDEEvent(pending.event) {
+                hookSpecificOutput = Self.qoderIDEQuestionResponse(answers: answersDict)
+            } else {
+                hookSpecificOutput = [
                     "hookEventName": "PermissionRequest",
                     "decision": [
                         "behavior": "allow",
-                        "updatedInput": updatedInput
-                    ] as [String: Any]
-                ] as [String: Any]
-            ]
+                        "updatedInput": updatedInput,
+                    ] as [String: Any],
+                ]
+            }
+            let obj: [String: Any] = ["hookSpecificOutput": hookSpecificOutput]
             responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
         } else {
             let obj: [String: Any] = [
@@ -2976,7 +3070,7 @@ final class AppState {
         // Fall back to the raw toolInput value when the [[String:Any]] cast fails.
         updatedInput["questions"] = originalQuestions ?? (event.toolInput?["questions"] ?? [] as [[String: Any]])
         updatedInput["answers"] = answers
-        // Qoder CLI validates updatedInput against the AskUserQuestion schema
+        // Qoder CLI and QoderWork validate updatedInput against the AskUserQuestion schema
         // (additionalProperties: false, only questions/answers/annotations/
         // metadata). The scalar `answer` key fails that validation with
         // "params must NOT have additional properties", so omit it there.
@@ -3339,6 +3433,17 @@ final class AppState {
             if pa != pb { return pa < pb }
             return a.value.lastActivity < b.value.lastActivity
         }?.key
+    }
+
+    private func knownCodexDesktopProviderSessionIds() -> Set<String> {
+        Set(sessions.compactMap { sessionId, session in
+            guard session.termBundleId == Self.codexAppBundleId else { return nil }
+            if let providerSessionId = session.providerSessionId, !providerSessionId.isEmpty {
+                return providerSessionId
+            }
+            guard sessionId.hasPrefix(Self.codexAppSessionPrefix) else { return nil }
+            return String(sessionId.dropFirst(Self.codexAppSessionPrefix.count))
+        })
     }
 
     // MARK: - Session Discovery (FSEventStream + process scan)
@@ -4036,9 +4141,16 @@ final class AppState {
 
             // If fold identity collides with this card, prefer the real parent id
             // (child wrongly reused the parent's providerSessionId).
-            var parentKey = findSessionId(providerSessionId: parentId) ?? parentId
-            if parentKey == candidate.sessionId {
-                parentKey = parentId
+            let parentKey: String
+            if let hostId = candidate.session.remoteHostId,
+               !hostId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                parentKey = "remote:\(hostId):\(parentId)"
+            } else {
+                var localParentKey = findSessionId(providerSessionId: parentId) ?? parentId
+                if localParentKey == candidate.sessionId {
+                    localParentKey = parentId
+                }
+                parentKey = localParentKey
             }
             if parentKey == candidate.sessionId { continue }
 
@@ -4267,23 +4379,31 @@ final class AppState {
     private func cursorFoldIdentity(
         for candidate: (sessionId: String, session: SessionSnapshot)
     ) -> (parentId: String, childId: String)? {
-        // Prefer providerSessionId if it folds; else the card key (used as agent_id).
-        let primaryId = candidate.session.providerSessionId ?? candidate.sessionId
+        // Compare provider ids, not the host-namespaced keys of remote cards.
+        let cardProviderId: String
+        if let hostId = candidate.session.remoteHostId,
+           !hostId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           candidate.sessionId.hasPrefix("remote:\(hostId):") {
+            cardProviderId = String(candidate.sessionId.dropFirst("remote:\(hostId):".count))
+        } else {
+            cardProviderId = candidate.sessionId
+        }
+        let primaryId = candidate.session.providerSessionId ?? cardProviderId
         let parentFromPrimary = CursorSessionFolding.foldTarget(
             childSessionId: primaryId,
             transcriptPath: candidate.session.transcriptPath
         )
-        let parentFromCard = candidate.sessionId == primaryId
+        let parentFromCard = cardProviderId == primaryId
             ? nil
             : CursorSessionFolding.foldTarget(
-                childSessionId: candidate.sessionId,
+                childSessionId: cardProviderId,
                 transcriptPath: candidate.session.transcriptPath
             )
         if let parentFromPrimary {
             return (parentFromPrimary, primaryId)
         }
         if let parentFromCard {
-            return (parentFromCard, candidate.sessionId)
+            return (parentFromCard, cardProviderId)
         }
         return nil
     }

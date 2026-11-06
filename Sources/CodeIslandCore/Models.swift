@@ -8,6 +8,24 @@ public enum CodexProcessRole: Equatable, Sendable {
     case session
 }
 
+public enum QoderAutoContinueProtocol {
+    public static let responseKey = "_codeisland_qoder_auto_continue"
+    public static let prompt = "继续"
+    public static let rewakeMessage = "CodeIsland auto-continue:"
+
+    public static func responseData(requested: Bool) -> Data {
+        guard requested else { return Data("{}".utf8) }
+        return Data("{\"_codeisland_qoder_auto_continue\":true}".utf8)
+    }
+
+    public static func requestsAutoContinue(_ data: Data) -> Bool {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return json[responseKey] as? Bool == true
+    }
+}
+
 public enum CLIProcessResolver {
     /// Lowercased bundle markers of the Trae CN desktop IDE (bundle id
     /// `cn.trae.app`). It has shipped as `Trae CN.app` since its first macOS
@@ -113,7 +131,8 @@ public enum CLIProcessResolver {
             // file (`qoderclicn-1.1.5`) rather than a bare name — so match the prefix,
             // not just the exact basename (#289).
             let basename = (lowercasedPath as NSString).lastPathComponent
-            return lowercasedPath.hasSuffix("/qodercli")
+            return basename == "qodercli"
+                || basename.hasPrefix("qodercli-")
                 || lowercasedPath.contains("/qodercli ")
                 || lowercasedPath.contains("/@qoder-ai/qodercli")
                 || basename == "qoderclicn"

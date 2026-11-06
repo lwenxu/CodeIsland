@@ -310,6 +310,7 @@ enum CodexDiscovery {
         now: Date = Date(),
         freshnessWindow: TimeInterval = 600,
         completionSettleWindow: TimeInterval = 30,
+        excludingSessionIds: Set<String> = [],
         fileManager: FileManager = .default
     ) -> [CodexDesktopThreadRecord] {
         let statePath = overrideStatePath ?? FileManager.default.homeDirectoryForCurrentUser
@@ -373,6 +374,7 @@ enum CodexDiscovery {
                 guard let sessionId = SQLiteReader.sqliteColumnString(statement, index: 0),
                       let transcriptPath = SQLiteReader.sqliteColumnString(statement, index: 1),
                       let cwd = SQLiteReader.sqliteColumnString(statement, index: 2),
+                      !excludingSessionIds.contains(sessionId),
                       fileManager.fileExists(atPath: transcriptPath) else { continue }
                 // JSON `source` rows can also belong to a concurrent Codex CLI
                 // subagent. Never re-key an explicitly CLI-origin rollout into
@@ -419,7 +421,7 @@ enum CodexDiscovery {
     }
 
     /// Find active Codex sessions by matching running processes to session files
-    static func findActiveCodexSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+    static func findActiveCodexSessions(candidatePids: [pid_t]? = nil, excludingDesktopSessionIds: Set<String> = []) -> [DiscoveredSession] {
         let codexProcesses = AgentProcessFinder.findCodexProcesses(candidatePids: candidatePids)
         guard !codexProcesses.isEmpty else { return [] }
 
@@ -445,7 +447,8 @@ enum CodexDiscovery {
                 discoverCodexSessions(
                     processes: group,
                     sessionsBase: "\(root)/sessions",
-                    statePath: "\(root)/state_5.sqlite"
+                    statePath: "\(root)/state_5.sqlite",
+                    excludingDesktopSessionIds: excludingDesktopSessionIds
                 )
             },
             sessionId: \.sessionId,
@@ -464,6 +467,7 @@ enum CodexDiscovery {
         sessionsBase: String,
         statePath: String,
         now: Date = Date(),
+        excludingDesktopSessionIds: Set<String> = [],
         fileManager fm: FileManager = .default
     ) -> [DiscoveredSession] {
         var results: [DiscoveredSession] = []
@@ -518,6 +522,9 @@ enum CodexDiscovery {
                 let fileName = (file as NSString).lastPathComponent
                 let rawSessionId = extractCodexSessionId(from: fileName)
                 guard !rawSessionId.isEmpty else { continue }
+                if process.isDesktop, excludingDesktopSessionIds.contains(rawSessionId) {
+                    continue
+                }
                 let identity = codexDiscoveryIdentity(
                     rawSessionId: rawSessionId,
                     isDesktop: process.isDesktop
@@ -594,7 +601,7 @@ enum CodexDiscovery {
         // state_5.sqlite and let transcript activity drive running/idle state.
         if processes.contains(where: { $0.isDesktop }) {
             results.append(contentsOf: findRecentCodexDesktopSessions(
-                excluding: seenDesktopSessionIds,
+                excluding: seenDesktopSessionIds.union(excludingDesktopSessionIds),
                 statePath: statePath,
                 now: now,
                 fileManager: fm
@@ -615,6 +622,7 @@ enum CodexDiscovery {
         return recentCodexDesktopThreadRecords(
             statePath: resolvedStatePath,
             now: now,
+            excludingSessionIds: excludedSessionIds,
             fileManager: fileManager
         ).compactMap { record in
             guard !excludedSessionIds.contains(record.sessionId) else { return nil }

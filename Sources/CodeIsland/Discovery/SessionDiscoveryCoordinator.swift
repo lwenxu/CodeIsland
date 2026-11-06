@@ -51,6 +51,9 @@ final class SessionDiscoveryCoordinator {
         /// The session stores the watcher follows (none: no watcher).
         var watchRoots: @Sendable () -> [String]
 
+        var sessionsExcludingKnownDesktop: (@Sendable (Set<String>) -> [DiscoveredSession])? = nil
+        var desktopSessionsExcludingKnown: (@Sendable (Set<String>) -> [DiscoveredSession])? = nil
+
         static let live = Scanners(
             sessions: { SessionDiscovery.findDiscoveredSessions() },
             codexDesktopSessions: {
@@ -61,7 +64,13 @@ final class SessionDiscoveryCoordinator {
             cursorSubagentIndex: {
                 CursorSubagentTranscriptIndex.scan(home: FileManager.default.homeDirectoryForCurrentUser.path)
             },
-            watchRoots: { SessionDiscovery.discoveryWatchRoots() }
+            watchRoots: { SessionDiscovery.discoveryWatchRoots() },
+            sessionsExcludingKnownDesktop: { SessionDiscovery.findDiscoveredSessions(excludingCodexDesktopSessionIds: $0) },
+            desktopSessionsExcludingKnown: {
+                ConfigInstaller.isEnabled(source: "codex")
+                    ? CodexDiscovery.findRecentCodexDesktopSessions(excluding: $0)
+                    : []
+            }
         )
 
         static let inert = Scanners(
@@ -78,6 +87,7 @@ final class SessionDiscoveryCoordinator {
     var scanners: Scanners
     /// Receives each scan's sessions, on the main actor.
     var onDiscovered: ([DiscoveredSession]) -> Void = { _ in }
+    var knownCodexDesktopSessionIds: () -> Set<String> = { [] }
 
     // Torn down from `deinit`, which may run off the main actor (AppState is
     // released there by async XCTest ARC). Only mutated on the main actor.
@@ -125,9 +135,11 @@ final class SessionDiscoveryCoordinator {
 
         pendingRescan = false
         let scan = scanners.sessions
+        let excludingScan = scanners.sessionsExcludingKnownDesktop
+        let excludedSessionIds = knownCodexDesktopSessionIds()
         let generation = self.generation
         scanTask = Task.detached { [weak self] in
-            let discovered = scan()
+            let discovered = excludingScan?(excludedSessionIds) ?? scan()
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self, self.generation == generation else { return }
@@ -185,9 +197,11 @@ final class SessionDiscoveryCoordinator {
     func requestCodexDesktopScan() {
         guard !isStopped, codexDesktopScanTask == nil else { return }
         let scan = scanners.codexDesktopSessions
+        let excludingScan = scanners.desktopSessionsExcludingKnown
+        let excludedSessionIds = knownCodexDesktopSessionIds()
         let generation = self.generation
         codexDesktopScanTask = Task.detached { [weak self] in
-            let discovered = scan()
+            let discovered = excludingScan?(excludedSessionIds) ?? scan()
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self, self.generation == generation else { return }

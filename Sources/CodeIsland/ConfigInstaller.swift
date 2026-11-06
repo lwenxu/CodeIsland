@@ -454,6 +454,7 @@ struct ConfigInstaller {
                 ("SessionEnd", 5, true),
                 ("Notification", 86400, false),
                 ("PreCompact", 5, true),
+                ("StopFailure", 30, false),
             ]
         ),
         // Qoder CN (国行) — the China build ships as its own `qoderclicn` binary
@@ -1850,7 +1851,15 @@ struct ConfigInstaller {
             case .claude:
                 // Qwen Code (a Claude fork) reuses this format and NEEDS timeout per entry
                 // — otherwise long-running PermissionRequest hooks hang the agent (#103).
-                entry = ["matcher": "*", "hooks": [["type": "command", "command": baseCommand, "timeout": timeout] as [String: Any]]]
+                var hook: [String: Any] = [
+                    "type": "command", "command": baseCommand, "timeout": timeout,
+                ]
+                if cli.source == "qoder", event == "StopFailure" {
+                    hook["asyncRewake"] = true
+                    hook["rewakeMessage"] = QoderAutoContinueProtocol.rewakeMessage
+                    hook["rewakeSummary"] = "Qoder model failure; continuing once"
+                }
+                entry = ["matcher": "*", "hooks": [hook]]
             case .nested:
                 let cmd = (cli.source == "gemini" || cli.source == "traecli-next")
                     ? "\(baseCommand) --event \(event)"
