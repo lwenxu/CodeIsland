@@ -262,6 +262,7 @@ extension AppState {
             }
             if normalizedCurrent != normalizedIncoming {
                 session.lastUserPrompt = normalizedIncoming
+                if session.source == "codex" { scheduleSave() }
                 let lastUserText = session.recentMessages.last(where: { $0.isUser })?.text
                 let lastNormalized = lastUserText.flatMap {
                     JSONLTailer.normalizedCursorChatText(from: $0) ?? $0
@@ -346,9 +347,7 @@ extension AppState {
         // Cursor's question (or a transcript turn boundary ending some other
         // display-only wait): reminders, and a push for a question just asked.
         noteDisplayOnlyWait(sessionId: delta.sessionId, was: waitBefore, announce: questionStateChanged)
-        if questionStateChanged {
-            // Hooks stay silent while Cursor waits on its question, so nothing
-            // else recomputes the aggregated pill/mascot state for this flip.
+        if questionStateChanged || delta.turnStatus != nil {
             refreshDerivedState()
         }
     }

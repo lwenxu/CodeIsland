@@ -68,6 +68,22 @@ extension AppState {
             changed = true
         }
         if let backfill {
+            if session.source == "codex" {
+                let missing = backfill.latestCodexMessages.filter {
+                    $0.isUser ? session.lastUserPrompt == nil : session.lastAssistantMessage == nil
+                }
+                for message in missing {
+                    if message.isUser {
+                        session.lastUserPrompt = message.text
+                    } else {
+                        session.lastAssistantMessage = message.text
+                    }
+                }
+                if !missing.isEmpty {
+                    session.recentMessages.insert(contentsOf: missing, at: 0)
+                    changed = true
+                }
+            }
             let rebuilt = Self.agentTasksAfterBackfill(
                 live: session.agentTasks,
                 backfill: backfill,

@@ -414,6 +414,21 @@ public enum AgentTaskTranscript {
         public let events: [AgentTaskEvent]
         /// False when only the tail window was read (older rows unseen).
         public let coversWholeFile: Bool
+        public let latestCodexMessages: [ChatMessage]
+
+        init(events: [AgentTaskEvent], coversWholeFile: Bool, latestCodexMessages: [ChatMessage] = []) {
+            self.events = events
+            self.coversWholeFile = coversWholeFile
+            self.latestCodexMessages = latestCodexMessages
+        }
+
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.events == rhs.events
+                && lhs.coversWholeFile == rhs.coversWholeFile
+                && lhs.latestCodexMessages.elementsEqual(rhs.latestCodexMessages) {
+                    $0.isUser == $1.isUser && $0.text == $1.text
+                }
+        }
     }
 
     /// Read checklist events from the transcript bytes before `endOffset`
@@ -432,16 +447,18 @@ public enum AgentTaskTranscript {
         let start = endOffset > maxBytes ? endOffset - maxBytes : 0
         guard (try? handle.seek(toOffset: start)) != nil,
               let data = try? handle.read(upToCount: Int(endOffset - start)) else { return nil }
-        return Backfill(
-            events: scan(data, startsAtLineBoundary: start == 0, maxLineBytes: maxLineBytes),
-            coversWholeFile: start == 0
-        )
+        return scanBackfill(data, startsAtLineBoundary: start == 0, maxLineBytes: maxLineBytes)
     }
 
     /// Checklist events in a JSONL blob, in order. A leading partial row
     /// (window cut mid-line) and a trailing unterminated row are ignored.
     public static func scan(_ data: Data, startsAtLineBoundary: Bool, maxLineBytes: Int = 256 * 1024) -> [AgentTaskEvent] {
+        scanBackfill(data, startsAtLineBoundary: startsAtLineBoundary, maxLineBytes: maxLineBytes).events
+    }
+
+    private static func scanBackfill(_ data: Data, startsAtLineBoundary: Bool, maxLineBytes: Int) -> Backfill {
         var events: [AgentTaskEvent] = []
+        var latestCodexMessages: [ChatMessage] = []
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
             let total = raw.count
@@ -461,9 +478,23 @@ public enum AgentTaskTranscript {
                 let lineData = Data(bytes: base + lineStart, count: length)
                 guard let json = (try? JSONSerialization.jsonObject(with: lineData)) as? [String: Any] else { continue }
                 events.append(contentsOf: self.events(fromLine: json))
+                let message: ChatMessage
+                if let prompt = JSONLTailer.codexPublicUserText(from: json) {
+                    message = ChatMessage(isUser: true, text: prompt)
+                } else if let reply = JSONLTailer.codexPublicAssistantText(from: json) {
+                    message = ChatMessage(isUser: false, text: reply)
+                } else {
+                    continue
+                }
+                latestCodexMessages.removeAll { $0.isUser == message.isUser }
+                latestCodexMessages.append(message)
             }
         }
-        return events
+        return Backfill(
+            events: events,
+            coversWholeFile: startsAtLineBoundary,
+            latestCodexMessages: latestCodexMessages
+        )
     }
 
     /// Byte prefilter so the backfill decodes only rows that can matter. It
@@ -474,6 +505,8 @@ public enum AgentTaskTranscript {
         for marker in operationMarkers where contains(ptr, length: length, marker: marker) {
             return true
         }
+        if contains(ptr, length: length, marker: codexAssistantRoleMarker),
+           contains(ptr, length: length, marker: codexResponseItemMarker) { return true }
         // A Claude prompt row: a user row that answers no tool call.
         return contains(ptr, length: length, marker: claudeUserTypeMarker)
             && !contains(ptr, length: length, marker: toolUseIdMarker)
@@ -521,10 +554,14 @@ public enum AgentTaskTranscript {
         #""is_error":true"#,
         #""type":"task_started""#,
         #""type":"user_message""#,
+        #""type":"UserMessage""#,
+        #""type":"agent_message""#,
         #""type":"task_complete""#,
         #""type":"turn_aborted""#,
         #""type":"turn_failed""#,
     ].map { Array($0.utf8) }
+    private static let codexAssistantRoleMarker = Array(#""role":"assistant""#.utf8)
+    private static let codexResponseItemMarker = Array(#""type":"response_item""#.utf8)
     private static let claudeUserTypeMarker = Array(#""type":"user""#.utf8)
     private static let toolUseIdMarker = Array(#""tool_use_id""#.utf8)
 

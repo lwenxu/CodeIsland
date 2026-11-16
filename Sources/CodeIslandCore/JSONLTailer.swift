@@ -620,11 +620,12 @@ public final class JSONLTailer: @unchecked Sendable {
             case "task_started":
                 delta.lastAssistantMessage = nil
                 delta.turnStatus = .processing
-            case "user_message":
-                delta.lastAssistantMessage = nil
-                if let message = normalizedText(payload["message"]) {
-                    delta.lastUserPrompt = message
+            case "user_message", "item_completed":
+                let prompt = codexPublicUserText(from: json)
+                if eventType == "user_message" || prompt != nil {
+                    delta.lastAssistantMessage = nil
                 }
+                if let prompt { delta.lastUserPrompt = prompt }
             // "turn_failed" is not in today's codex EventMsg enum — kept as a
             // forward-compatible guess at the obvious name for a failed turn.
             case "task_complete", "turn_aborted", "turn_failed":
@@ -685,6 +686,19 @@ public final class JSONLTailer: @unchecked Sendable {
         guard let open = text.range(of: "<\(tag)>"),
               let close = text.range(of: "</\(tag)>", range: open.upperBound..<text.endIndex) else { return nil }
         return text[open.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The user-facing event, unlike response items that can contain injected context.
+    public static func codexPublicUserText(from json: [String: Any]) -> String? {
+        guard json["type"] as? String == "event_msg",
+              let payload = json["payload"] as? [String: Any] else { return nil }
+        if payload["type"] as? String == "user_message" {
+            return normalizedText(payload["message"])
+        }
+        guard payload["type"] as? String == "item_completed",
+              let item = payload["item"] as? [String: Any],
+              item["type"] as? String == "UserMessage" else { return nil }
+        return codexTextBlocks(item["content"], acceptedTypes: ["text"])
     }
 
     /// Extract assistant text that Codex deliberately persists for display.

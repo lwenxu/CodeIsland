@@ -671,29 +671,26 @@ final class AppState {
         //     running should be cleaned up — these apps can't send SessionEnd when force-quit.
         //     Don't check PID liveness here: the dedup in integrateDiscovered may have
         //     reattached a CLI PID to the old native app session, keeping it alive incorrectly.
-        // `NSWorkspace.runningApplications` is not a cheap array read: touching
-        // `bundleIdentifier` on each entry goes out to LaunchServices over XPC,
-        // and this timer fires every 3 seconds forever. Only two things below
-        // need it, and on an idle Mac neither does — so build it lazily and, in
-        // the common case, never at all (#299).
-        var cachedRunningBundleIds: Set<String>?
-        func runningBundleIds() -> Set<String> {
-            if let cachedRunningBundleIds { return cachedRunningBundleIds }
-            let ids = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-            cachedRunningBundleIds = ids
-            return ids
+        var runningByBundleId: [String: Bool] = [:]
+        func isAppRunning(_ bundleId: String) -> Bool {
+            if let running = runningByBundleId[bundleId] { return running }
+            let running = !NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).isEmpty
+            runningByBundleId[bundleId] = running
+            return running
         }
 
-        if sessions.values.contains(where: { $0.isNativeAppMode }) {
-            let running = runningBundleIds()
-            for (key, session) in sessions {
-                guard session.isNativeAppMode,
-                      let bundleId = session.termBundleId,
-                      !running.contains(bundleId) else { continue }
-                removeSession(key)
+        for (key, session) in sessions {
+            guard session.isNativeAppMode,
+                  let bundleId = session.termBundleId,
+                  !isAppRunning(bundleId) else { continue }
+            removeSession(key)
+        }
+        if ConfigInstaller.isEnabled(source: "codex") {
+            discovery.pollCodexDesktopIfDue(now: Date()) {
+                let bundleId = Self.codexAppBundleId
+                return isAppRunning(bundleId) ? [bundleId] : []
             }
         }
-        discovery.pollCodexDesktopIfDue(now: Date(), runningBundleIdentifiers: runningBundleIds)
 
         // 4. Remove idle sessions past timeout (user setting, or 10 min default for no-monitor sessions)
         let userTimeout = SettingsManager.shared.sessionTimeout
@@ -3437,7 +3434,9 @@ final class AppState {
 
     private func knownCodexDesktopProviderSessionIds() -> Set<String> {
         Set(sessions.compactMap { sessionId, session in
-            guard session.termBundleId == Self.codexAppBundleId else { return nil }
+            // Restored cards are known only after discovery attaches their rollout.
+            guard session.termBundleId == Self.codexAppBundleId,
+                  attachedTranscriptTokens[sessionId] != nil else { return nil }
             if let providerSessionId = session.providerSessionId, !providerSessionId.isEmpty {
                 return providerSessionId
             }

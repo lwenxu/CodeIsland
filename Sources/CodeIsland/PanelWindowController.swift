@@ -313,8 +313,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
 
         setupHorizontalDragMonitor()
         updatePosition()
-        panel.orderFrontRegardless()
-        MascotAnimationGate.shared.setPanelVisible(true)
+        updateVisibility()
 
         // Screen change observer
         NotificationCenter.default.addObserver(
@@ -551,7 +550,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         autoScreenPoller?.invalidate()
         autoScreenPoller = nil
 
-        guard !isPinnedToConnectedDisplay else { return }
+        guard NSScreen.screens.count > 1, !isPinnedToConnectedDisplay else { return }
 
         // Screen-parameter / Space-change / frontmost-app notifications already cover the
         // common cases. This poller is a fallback for the rare path where a window is
@@ -560,9 +559,11 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         // contributing to Energy Impact (#92).
         autoScreenPoller = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.refreshCurrentScreen()
+                guard let self, self.panel?.isVisible == true else { return }
+                self.refreshCurrentScreen()
             }
         }
+        autoScreenPoller?.tolerance = 1
     }
 
     private func updatePosition() {
@@ -716,19 +717,15 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         let settings = SettingsManager.shared
         // A shortcut's reveal lasts while the island stays open.
         if !appState.surface.isExpanded { fullscreenHide.islandCollapsed() }
-        if fullscreenHide.hidesIsland(hideInFullscreen: settings.hideInFullscreen) {
-            panel.orderOut(nil)
-            MascotAnimationGate.shared.setPanelVisible(false)
-            return
-        }
-
-        if settings.hideWhenNoSession && appState.activeSessionCount == 0 {
-            panel.orderOut(nil)
+        if fullscreenHide.hidesIsland(hideInFullscreen: settings.hideInFullscreen)
+            || (settings.hideWhenNoSession && appState.activeSessionCount == 0) {
+            if panel.isVisible { panel.orderOut(nil) }
             MascotAnimationGate.shared.setPanelVisible(false)
             return
         }
 
         if !panel.isVisible {
+            refreshCurrentScreen()
             panel.orderFrontRegardless()
         }
         MascotAnimationGate.shared.setPanelVisible(true)

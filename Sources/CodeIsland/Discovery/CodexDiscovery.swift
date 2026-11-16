@@ -376,6 +376,11 @@ enum CodexDiscovery {
                       let cwd = SQLiteReader.sqliteColumnString(statement, index: 2),
                       !excludingSessionIds.contains(sessionId),
                       fileManager.fileExists(atPath: transcriptPath) else { continue }
+                let dbUpdatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+                let fileModifiedAt = (try? fileManager.attributesOfItem(atPath: transcriptPath))?[.modificationDate] as? Date
+                let modifiedAt = max(dbUpdatedAt, fileModifiedAt ?? dbUpdatedAt)
+                guard modifiedAt >= now.addingTimeInterval(-freshnessWindow) else { continue }
+
                 // JSON `source` rows can also belong to a concurrent Codex CLI
                 // subagent. Never re-key an explicitly CLI-origin rollout into
                 // the Desktop namespace merely because the Desktop host is open.
@@ -388,11 +393,6 @@ enum CodexDiscovery {
                 } else {
                     guard transcriptOrigin != .cli else { continue }
                 }
-
-                let dbUpdatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
-                let fileModifiedAt = (try? fileManager.attributesOfItem(atPath: transcriptPath))?[.modificationDate] as? Date
-                let modifiedAt = max(dbUpdatedAt, fileModifiedAt ?? dbUpdatedAt)
-                guard modifiedAt >= now.addingTimeInterval(-freshnessWindow) else { continue }
 
                 let dbModel = SQLiteReader.sqliteColumnString(statement, index: 4)
                 let (transcriptModel, messages) = readRecentFromCodexTranscript(path: transcriptPath)
@@ -920,6 +920,7 @@ enum CodexDiscovery {
         var model: String?
         var turnModel: String?
         var userMessages: [(Int, String)] = []
+        var fallbackUserMessage: (Int, String)?
         var assistantMessages: [(Int, String)] = []
         var index = 0
 
@@ -944,14 +945,8 @@ enum CodexDiscovery {
                 turnModel = observation.model
             }
 
-            // Prefer event_msg (cleaner user messages from Codex).
-            if type == "event_msg",
-               let payload = json["payload"] as? [String: Any],
-               let msgType = payload["type"] as? String,
-               let msg = payload["message"] as? String, !msg.isEmpty {
-                if msgType == "user_message" {
-                    userMessages.append((index, msg))
-                }
+            if let prompt = JSONLTailer.codexPublicUserText(from: json) {
+                userMessages.append((index, prompt))
             }
 
             if let assistantText = JSONLTailer.codexPublicAssistantText(from: json),
@@ -961,18 +956,21 @@ enum CodexDiscovery {
 
             // response_item user entries often include injected system/tool
             // context, so only use them when no cleaner event_msg was found.
-            if type == "response_item", userMessages.isEmpty,
+            if type == "response_item", userMessages.isEmpty, fallbackUserMessage == nil,
                let payload = json["payload"] as? [String: Any],
                payload["type"] as? String == "message",
                payload["role"] as? String == "user",
                let content = payload["content"] as? [[String: Any]],
                let text = content.first(where: { $0["type"] as? String == "input_text" })?["text"] as? String,
                !text.isEmpty {
-                userMessages.append((index, text))
+                fallbackUserMessage = (index, text)
             }
             index += 1
         }
 
+        if userMessages.isEmpty, let fallbackUserMessage {
+            userMessages.append(fallbackUserMessage)
+        }
         var combined: [(Int, ChatMessage)] = []
         for (i, text) in userMessages.suffix(3) {
             combined.append((i, ChatMessage(isUser: true, text: text)))
@@ -981,7 +979,10 @@ enum CodexDiscovery {
             combined.append((i, ChatMessage(isUser: false, text: text)))
         }
         combined.sort { $0.0 < $1.0 }
-        let recent = Array(combined.suffix(3).map { $0.1 })
+        var recent = combined.suffix(3).map { $0.1 }
+        if !recent.contains(where: \.isUser), let latestPrompt = userMessages.last?.1 {
+            recent[0] = ChatMessage(isUser: true, text: latestPrompt)
+        }
 
         return (turnModel ?? model, recent)
     }

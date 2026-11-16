@@ -914,10 +914,11 @@ private struct CompactRightWing: View {
 /// bounce still marks a reminder).
 private struct WaitingBadgePulse: ViewModifier {
     @ObservedObject private var animationGate = MascotAnimationGate.shared
+    @AppStorage(SettingsKey.mascotSpeed) private var animationSpeed = SettingsDefaults.mascotSpeed
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        if animationGate.animationsActive && !reduceMotion {
+        if animationSpeed > 0 && animationGate.animationsActive && !reduceMotion {
             FrameClock(interval: FrameTicker.step) { now in
                 content.opacity(0.45 + 0.55 * MascotMotion.glowPulse(now))
             }
@@ -5574,7 +5575,7 @@ private extension View {
     }
 }
 
-// MARK: - Typing Indicator (three bouncing dots)
+// MARK: - Typing Indicator
 
 private struct TypingIndicator: View {
     let fontSize: CGFloat
@@ -5584,6 +5585,7 @@ private struct TypingIndicator: View {
     /// Each indicator starts its sweep at the left edge.
     @State private var origin = Date.timeIntervalSinceReferenceDate
     @ObservedObject private var animationGate = MascotAnimationGate.shared
+    @AppStorage(SettingsKey.mascotSpeed) private var animationSpeed = SettingsDefaults.mascotSpeed
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let sweepDuration: Double = 2.5
@@ -5592,7 +5594,7 @@ private struct TypingIndicator: View {
         if let label {
             // Reduce Motion, or the island's animations held (hidden, asleep):
             // the label stays, the endless shimmer goes.
-            if animationGate.animationsActive && !reduceMotion {
+            if animationSpeed > 0 && animationGate.animationsActive && !reduceMotion {
                 // On the island's clock: as a repeatForever animation the sweep
                 // laid the panel out on every display frame (FrameClock).
                 FrameClock(interval: FrameTicker.step) { now in
@@ -5600,24 +5602,26 @@ private struct TypingIndicator: View {
                     shimmer(label, sweep: MascotMotion.easeInOut(CGFloat(max(0, progress))))
                 }
             } else {
-                shimmer(label, sweep: 0)
+                statusText(label)
             }
         }
     }
 
+    private func statusText(_ label: String) -> some View {
+        Text(label)
+            .font(.system(size: fontSize, design: .monospaced))
+            .foregroundStyle((color ?? .white).opacity(bright ? 0.6 : 0.35))
+    }
+
     /// The label with its bright band `sweep` (0…1) of the way across.
     private func shimmer(_ label: String, sweep: CGFloat) -> some View {
-        let baseColor: Color = color ?? .white
-        let baseOpacity: Double = bright ? 0.6 : 0.35
         let peakOpacity: Double = bright ? 0.8 : 0.5
         let midOpacity: Double = bright ? 0.5 : 0.3
         let bandWidth: CGFloat = bright ? 80 : 60
         let startPhase: CGFloat = bright ? -80 : -60
         let endPhase: CGFloat = bright ? 100 : 80
 
-        return Text(label)
-            .font(.system(size: fontSize, design: .monospaced))
-            .foregroundStyle(baseColor.opacity(baseOpacity))
+        return statusText(label)
             .overlay(
                 LinearGradient(
                     stops: [

@@ -227,7 +227,7 @@ struct SettingsDefaults {
     static let maxToolHistory = 20
     static let showTaskProgress = true
 
-    static let mascotSpeed = 100  // percentage: 0–300, 0 = silent
+    static let mascotSpeed = 0  // percentage: 0–300, 0 = static
 
     static let sessionGroupingMode = "all"
 
