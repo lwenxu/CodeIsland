@@ -1382,7 +1382,43 @@ struct TerminalActivator {
     /// URL — a Codex CLI run in Codex's own terminal included.
     static func codexDesktopThreadLink(for session: SessionSnapshot) -> URL? {
         guard let threadId = session.codexDesktopThreadId else { return nil }
-        return URL(string: "codex://threads/\(threadId)")
+        var link = URLComponents(string: "codex://threads/\(threadId)")
+        if session.isRemote,
+           let hostId = codexDesktopHostId(threadId: threadId, cwd: session.cwd) {
+            link?.queryItems = [URLQueryItem(name: "hostId", value: hostId)]
+        }
+        return link?.url
+    }
+
+    /// Codex's local desktop state maps connected remote projects to its own
+    /// host IDs. CodeIsland's SSH host UUID is a different namespace, so it
+    /// cannot be used in a Codex deep link. Read this only on a user click.
+    private static func codexDesktopHostId(threadId: String, cwd: String?) -> String? {
+        let stateURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".codex/.codex-global-state.json")
+        guard let data = try? Data(contentsOf: stateURL),
+              let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        if let assignments = state["thread-project-assignments"] as? [String: [String: Any]],
+           let hostId = assignments[threadId]?["hostId"] as? String,
+           hostId.hasPrefix("remote-control:") {
+            return hostId
+        }
+        if let memberships = state["thread-project-membership-host-ids"] as? [String: String],
+           let hostId = memberships[threadId], hostId.hasPrefix("remote-control:") {
+            return hostId
+        }
+
+        guard let cwd,
+              let projects = state["remote-projects"] as? [[String: Any]] else { return nil }
+        let hosts = Set(projects.compactMap { project -> String? in
+            guard project["remotePath"] as? String == cwd,
+                  let hostId = project["hostId"] as? String,
+                  hostId.hasPrefix("remote-control:") else { return nil }
+            return hostId
+        })
+        return hosts.count == 1 ? hosts.first : nil
     }
 
     /// Hands the link to the Codex that is running. More than one installed
