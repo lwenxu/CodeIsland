@@ -808,6 +808,17 @@ public struct SessionSnapshot: Sendable {
         return source == expectedSource
     }
 
+    /// A Codex Desktop thread can be opened on this Mac even when its hook
+    /// came from a connected remote host. Other remote apps have no local
+    /// session target.
+    public var codexDesktopThreadId: String? {
+        guard source == "codex", termBundleId == "com.openai.codex",
+              isNativeAppMode,
+              let providerSessionId,
+              UUID(uuidString: providerSessionId) != nil else { return nil }
+        return providerSessionId
+    }
+
     /// True when the session runs inside an IDE's integrated terminal.
     /// We can't query IDE tab/pane state, so notification suppression should be skipped.
     public var isIDETerminal: Bool {

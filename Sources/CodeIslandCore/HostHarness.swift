@@ -412,11 +412,10 @@ extension SessionSnapshot {
         hostHarness?.label
     }
 
-    /// Whether click-to-jump has a real target. Remote sessions and
-    /// harness-hosted sessions whose harness URL is unknown hide the
-    /// affordance instead of offering a dead or misleading click.
+    /// Whether click-to-jump has a real target. A remote Codex Desktop thread
+    /// has a local deep-link target; other remote sessions do not.
     public var canJumpFromNotch: Bool {
-        if isRemote { return false }
+        if isRemote { return codexDesktopThreadId != nil }
         if let hostHarness { return hostHarness.canJump }
         return true
     }

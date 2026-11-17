@@ -96,7 +96,10 @@ struct TerminalVisibilityDetector {
     /// located, where the jump only raised the terminal.
     /// **Call from a background thread only**, like `isSessionTabVisible`.
     static func didJumpLand(_ session: SessionSnapshot) -> Bool {
-        guard !session.isRemote else { return false }
+        if session.isRemote {
+            guard session.codexDesktopThreadId != nil else { return false }
+            return probe.isTerminalFrontmost(session)
+        }
         let probe = self.probe
         if probe.isSessionTabVisible(session) { return true }
         return probe.isTerminalFrontmost(session) && probe.isSessionLocatable(session)

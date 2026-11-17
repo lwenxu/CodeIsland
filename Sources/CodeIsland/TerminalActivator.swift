@@ -115,7 +115,12 @@ struct TerminalActivator {
         sessionId: String? = nil,
         allowHerdr: Bool = true
     ) {
-        guard !session.isRemote else { return }
+        if session.isRemote {
+            if let link = codexDesktopThreadLink(for: session) {
+                openInCodexDesktop(link, fallbackCwd: nil)
+            }
+            return
+        }
         // Every caller is a user action (click, shortcut, Buddy button): the
         // user is now dealing with this session, so its follow-ups stop.
         if let sessionId {
@@ -1376,11 +1381,7 @@ struct TerminalActivator {
     /// session with a well-formed thread id, so a click never opens a guessed
     /// URL — a Codex CLI run in Codex's own terminal included.
     static func codexDesktopThreadLink(for session: SessionSnapshot) -> URL? {
-        guard session.termBundleId == AppState.codexAppBundleId,
-              session.isNativeAppMode,
-              let threadId = session.providerSessionId,
-              UUID(uuidString: threadId) != nil
-        else { return nil }
+        guard let threadId = session.codexDesktopThreadId else { return nil }
         return URL(string: "codex://threads/\(threadId)")
     }
 
